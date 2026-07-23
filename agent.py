@@ -2,32 +2,34 @@ import numpy as np
 import random
 
 class DroneAgent:
+    # Brain Shape: 10 state dimensions + 5 action outputs
+    q_table = np.zeros((3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 5)) 
+
     def __init__(self, env_size):
-        self.size = env_size
-        self.q_table = np.zeros((env_size, env_size, 4))
-
-        self.actions = [0, 1, 2, 3]   # numeric actions
-
-        self.epsilon = 0.9
-        self.alpha = 0.1
-        self.gamma = 0.9
+        self.epsilon = 1.0
+        self.lr = 0.05
+        self.gamma = 0.95
+        self.actions = [0, 1, 2, 3, 4]  # 0=Up, 1=Right, 2=Down, 3=Left, 4=Hover
+        
+    def _get_idx(self, state):
+        dx, dy, wu, wr, wd, wl, eu, er, ed, el = state
+        return (dx + 1, dy + 1, wu, wr, wd, wl, eu, er, ed, el)
 
     def choose_action(self, state):
-        x, y = state
-
         if random.random() < self.epsilon:
             return random.choice(self.actions)
-        else:
-            return np.argmax(self.q_table[x, y])
+        idx = self._get_idx(state)
+        q_vals = self.q_table[idx]
+        max_val = np.max(q_vals)
+        best_actions = np.where(q_vals == max_val)[0]
+        return int(random.choice(best_actions))
 
     def learn(self, state, action, reward, next_state):
-        x, y = state
-        nx, ny = next_state
-
-        q_predict = self.q_table[x, y, action]
-        q_target = reward + self.gamma * np.max(self.q_table[nx, ny])
-
-        self.q_table[x, y, action] += self.alpha * (q_target - q_predict)
-
-        # epsilon decay
-        self.epsilon = max(0.05, self.epsilon * 0.995)
+        idx = self._get_idx(state)
+        next_idx = self._get_idx(next_state)
+        
+        predict = self.q_table[idx][action]
+        target = reward + self.gamma * np.max(self.q_table[next_idx])
+        
+        self.q_table[idx][action] += self.lr * (target - predict)
+        
