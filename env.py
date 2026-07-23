@@ -1,113 +1,115 @@
 import numpy as np
-import matplotlib.pyplot as plt
-
+import random
 
 class SwarmSearchEnv:
-    def __init__(self, size=5, num_drones=3):
-        self.size = size
+    def __init__(self, num_drones=120, env_size=50, is_training=True):
+        self.size = env_size
         self.num_drones = num_drones
-
-        self.grid = np.zeros((self.size, self.size), dtype=int)
-        self.explored = np.zeros((self.size, self.size), dtype=int)
-
-        self.collision_count = 0
         self.found_victim = False
-
-        # Generate unique starting positions
-        self.drone_positions = {}
-        taken_positions = set()
-
-        for i in range(self.num_drones):
-            while True:
-                pos = (
-                    np.random.randint(0, self.size),
-                    np.random.randint(0, self.size),
-                )
-                if pos not in taken_positions:
-                    taken_positions.add(pos)
-                    self.drone_positions[f"drone{i}"] = pos
-                    break
-
-        # Mark starting positions as explored
-        for pos in self.drone_positions.values():
-            self.explored[pos[0], pos[1]] = 1
-
-        # Generate victim position (not overlapping drones)
+        self.collision_count = 0
+        self.explored = np.zeros((env_size, env_size))
+        self.is_training = is_training
+        
         while True:
-            victim = (
-                np.random.randint(0, self.size),
-                np.random.randint(0, self.size),
-            )
-            if victim not in self.drone_positions.values():
-                self.victim_position = victim
+            self.target_position = (random.randint(0, env_size - 1), random.randint(0, env_size - 1))
+            if self.target_position != (1, 1):
                 break
+        
+        self.drone_positions = {}
+        self.active_drones = []
+        
+        if is_training:
+            # Random initial positions for training
+            for i in range(num_drones):
+                pos = (random.randint(0, env_size - 1), random.randint(0, env_size - 1))
+                self.drone_positions[f"drone{i}"] = pos
+                self.explored[pos[0], pos[1]] = 1
+                self.active_drones.append(f"drone{i}")
+        else:
+            # Demo starts with 0 active drones; they deploy via staggered launch from (1,1)
+            for i in range(num_drones):
+                self.drone_positions[f"drone{i}"] = (-1, -1)  # -1, -1 means inactive / in hangar
 
-    # --------------------------------------------------
+        self.explored[1, 1] = 1
 
-    def update_grid(self):
-        self.grid[:] = 0
+    def launch_drone(self, drone_id):
+        """Staggered Launch: Releases a drone at Base Station if spot is clear."""
+        base_pos = (1, 1)
+        if base_pos not in self.drone_positions.values():
+            self.drone_positions[drone_id] = base_pos
+            self.active_drones.append(drone_id)
+            return True
+        return False
 
-        # Victim
-        vx, vy = self.victim_position
-        self.grid[vx, vy] = 2
+    def _is_obstacle(self, x, y):
+        if x < 0 or x >= self.size or y < 0 or y >= self.size:
+            return 1
+        if self.explored[x, y] == 1:
+            return 1
+        if (x, y) in self.drone_positions.values():
+            return 1
+        return 0
 
-        # Drones
-        for x, y in self.drone_positions.values():
-            self.grid[x, y] = 1
-
-    # --------------------------------------------------
+    def get_state(self, drone_id):
+        pos = self.drone_positions[drone_id]
+        if pos == (-1, -1):
+            return (0, 0, 0, 0, 0, 0, 0, 0, 0, 0) # Dummy state for inactive drones
+            
+        x, y = pos
+        tx, ty = self.target_position
+        
+        dx = int(np.sign(tx - x))
+        dy = int(np.sign(ty - y))
+        
+        w_up = 1 if x == 0 else 0
+        w_right = 1 if y == self.size - 1 else 0
+        w_down = 1 if x == self.size - 1 else 0
+        w_left = 1 if y == 0 else 0
+        
+        e_up = self._is_obstacle(x-1, y)
+        e_right = self._is_obstacle(x, y+1)
+        e_down = self._is_obstacle(x+1, y)
+        e_left = self._is_obstacle(x, y-1)
+        
+        return (dx, dy, w_up, w_right, w_down, w_left, e_up, e_right, e_down, e_left)
 
     def move_drone(self, drone_id, action):
+        if drone_id not in self.active_drones:
+            return 0.0
 
         x, y = self.drone_positions[drone_id]
+        nx, ny = x, y
 
-        # Actions: 0=Up, 1=Down, 2=Left, 3=Right
-        if action == 0:      # Up
-            x = max(0, x - 1)
-        elif action == 1:    # Down
-            x = min(self.size - 1, x + 1)
-        elif action == 2:    # Left
-            y = max(0, y - 1)
-        elif action == 3:    # Right
-            y = min(self.size - 1, y + 1)
+        # Action 4: Hover / Stand Still
+        if action == 4:
+            return -0.2  # Small time penalty for standing still
 
-        new_pos = (x, y)
-        reward = -1  # small time penalty
+        if action == 0: nx -= 1
+        elif action == 1: ny += 1
+        elif action == 2: nx += 1
+        elif action == 3: ny -= 1
 
-        # Collision detection
-        collision = False
-        for other_id, other_pos in self.drone_positions.items():
-            if other_id != drone_id and other_pos == new_pos:
-                reward -= 5
-                self.collision_count += 1
-                collision = True
-                break
+        # Out of bounds collision
+        if nx < 0 or nx >= self.size or ny < 0 or ny >= self.size:
+            self.collision_count += 1
+            return -10.0  
 
-        # Only update position if no collision
-        if not collision:
-            self.drone_positions[drone_id] = new_pos
+        # Teammate collision
+        if (nx, ny) in self.drone_positions.values():
+            self.collision_count += 1
+            return -10.0 
 
-            # Exploration reward
-            if self.explored[new_pos[0], new_pos[1]] == 0:
-                reward += 2
-                self.explored[new_pos[0], new_pos[1]] = 1
+        self.drone_positions[drone_id] = (nx, ny)
+        
+        reward = -0.1 
+        if self.explored[nx, ny] == 0:
+            reward += 2.0  
+            self.explored[nx, ny] = 1
+        else:
+            reward -= 1.5  
 
-            # Victim found
-            if new_pos == self.victim_position:
-                reward += 20
-                self.found_victim = True
+        if (nx, ny) == self.target_position:
+            self.found_victim = True
+            reward += 100.0  
 
         return reward
-
-    # --------------------------------------------------
-
-    def render(self):
-        self.update_grid()
-
-        plt.imshow(self.grid, cmap="viridis", vmin=0, vmax=2)
-        plt.title("DR.ONE – AI Drone Swarm Search & Rescue")
-        plt.xticks(range(self.size))
-        plt.yticks(range(self.size))
-        plt.grid(True)
-        plt.pause(0.3)
-        plt.clf()
